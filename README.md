@@ -1,0 +1,1 @@
+# TFG-Magnificent7-Sentiment-Risk
