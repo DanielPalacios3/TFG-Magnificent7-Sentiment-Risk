@@ -1,0 +1,44 @@
+# Entorno virtual
+venv/
+env/
+.env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Datos (archivos grandes, no subir al repo)
+data/raw/
+data/clean/
+*.csv
+*.parquet
+*.xlsx
+*.json
+
+# Variables de entorno y API keys
+.env
+*.env
+secrets.py
+config_local.py
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IA y herramientas de asistencia (no subir)
+CLAUDE.md
+.claude/
+docs/
