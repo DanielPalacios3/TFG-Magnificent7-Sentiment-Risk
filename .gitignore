@@ -14,19 +14,34 @@ __pycache__/
 .ipynb_checkpoints/
 *.ipynb_checkpoints
 
-# Datos (archivos grandes, no subir al repo)
+# Datos raw (demasiado grandes para GitHub, ~8 GB)
 data/raw/
-data/clean/
-*.csv
 *.parquet
 *.xlsx
-*.json
+
+# Datos clean grandes que no usan los notebooks
+data/clean/news_clean_articles.csv
+data/clean/reddit_finbert_posts.csv
+data/clean/reddit_finbert_daily.csv
+data/clean/market_clean.csv
+data/clean/market_intraday_clean.csv
+
+privado/
+
+# Logs
+*.log
 
 # Variables de entorno y API keys
 .env
 *.env
 secrets.py
 config_local.py
+application_default_credentials.json
+*_credentials.json
+service_account*.json
+
+# Google Cloud SDK
+.config/gcloud/
 
 # IDEs
 .vscode/
@@ -38,7 +53,5 @@ config_local.py
 .DS_Store
 Thumbs.db
 
-# IA y herramientas de asistencia (no subir)
-CLAUDE.md
+# Herramientas de asistencia Claude (no subir al repo público)
 .claude/
-docs/

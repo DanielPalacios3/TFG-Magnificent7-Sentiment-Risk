@@ -3,35 +3,48 @@ Script: download_market.py
 Proyecto: TFG — Predicción del riesgo de mercado en las Magnificent 7
 Autor: Daniel Palacios García — UFV Madrid
 
-¿Qué hace?
-----------
-Descarga precios OHLCV diarios de las 7 empresas Magnificent 7 desde Yahoo Finance
-para el periodo 2019-01-01 a 2024-12-31, calcula variables de mercado relevantes
-para el TFG y guarda los datos en data/raw/market/.
+¿Qué hace este script?
+----------------------
+Este es el primer paso de todo el pipeline de datos. Se conecta a Yahoo Finance y se
+descarga los precios de apertura, cierre, máximo, mínimo y volumen (lo que se conoce
+como datos OHLCV) para cada una de las 7 empresas del grupo Magnificent 7. El rango
+temporal va desde el 1 de enero de 2019 hasta el 5 de abril de 2026, que es todo el
+periodo que necesitamos para el TFG. Después de descargar los precios en crudo, el
+script calcula una serie de variables derivadas que van a ser el input de los modelos
+GARCH y XGBoost, y lo guarda todo en la carpeta data/raw/market/.
 
-¿Qué genera?
-------------
-- data/raw/market/{TICKER}_market_2019_2024.csv  → un CSV por empresa
-- data/raw/market/ALL_market_2019_2024.csv       → CSV combinado con las 7 empresas
+¿Qué archivos genera?
+---------------------
+- data/raw/market/{TICKER}_market_2019_2026.csv  → un CSV individual por cada empresa
+- data/raw/market/ALL_market_2019_2026.csv       → un CSV grande con las 7 juntas
 
-¿Por qué cada variable?
------------------------
-- log_return         : rendimiento logarítmico diario — input principal de los modelos
-                       GARCH y XGBoost. Se usa logarítmico por sus propiedades estadísticas
-                       (aditividad temporal, distribución más cercana a normal).
-- vol_realized_5d    : volatilidad realizada rolling 5 días (anualizada). Captura el riesgo
-                       a muy corto plazo; útil como variable rezagada en GARCH-X.
-- vol_realized_20d   : volatilidad realizada rolling 20 días (anualizada). Aproxima un mes
-                       de negociación; es la VARIABLE OBJETIVO principal del TFG.
-- vol_intraday       : proxy de volatilidad intradía = (High - Low) / Close (rango de Parkinson
-                       simplificado). Aprovecha precios OHLC para una medida de volatilidad
-                       más precisa que usar solo el precio de cierre.
-- abs_return         : valor absoluto del rendimiento — proxy directo de volatilidad diaria,
-                       habitual en la literatura (Ding et al., 1993).
-- sq_return          : rendimiento al cuadrado — proxy de varianza diaria, base del modelo
-                       ARCH (Engle, 1982) y por tanto de todo el marco GARCH.
-- log_volume_change  : cambio logarítmico en volumen — variable candidata a incluir en
-                       GARCH-X como proxy de actividad y atención del mercado.
+¿Y por qué calculamos cada variable? Aquí va la explicación de cada una:
+------------------------------------------------------------------------
+- log_return         : es el rendimiento logarítmico diario, o sea, cuánto sube o baja
+                       la acción cada día en escala log. Es el input principal tanto para
+                       GARCH como para XGBoost. Usamos logaritmos (y no rendimientos simples)
+                       porque tienen propiedades estadísticas muy convenientes: se pueden
+                       sumar entre días y su distribución se parece más a una normal.
+- vol_realized_5d    : la volatilidad realizada con una ventana rolling de 5 días, anualizada.
+                       Básicamente captura cuánto se ha movido la acción en la última semana
+                       de trading. Es útil como variable rezagada en el modelo GARCH-X para
+                       ver si la volatilidad reciente ayuda a predecir la futura.
+- vol_realized_20d   : la volatilidad realizada con ventana de 20 días (anualizada), que
+                       equivale aproximadamente a un mes de negociación. Esta es la VARIABLE
+                       OBJETIVO principal del TFG — lo que los modelos intentan predecir.
+- vol_intraday       : un proxy de la volatilidad dentro del día, calculado como
+                       (High - Low) / Close. Es una versión simplificada del rango de
+                       Parkinson, y la gracia es que aprovecha que tenemos precios OHLC
+                       (no solo el cierre) para tener una medida de volatilidad más rica.
+- abs_return         : el valor absoluto del rendimiento diario, que es una forma directa
+                       y sencilla de medir volatilidad. Es un clásico en la literatura
+                       financiera (Ding et al., 1993 ya lo usaban).
+- sq_return          : el rendimiento al cuadrado, que es esencialmente un proxy de la
+                       varianza diaria. Es la base teórica del modelo ARCH original de
+                       Engle (1982), y por tanto de todo el marco GARCH que usamos.
+- log_volume_change  : el cambio logarítmico en el volumen de negociación de un día a otro.
+                       Lo incluimos como candidata para GARCH-X porque el volumen puede ser
+                       un proxy interesante de la atención y actividad del mercado.
 """
 
 import sys
@@ -44,13 +57,13 @@ import yfinance as yf
 from tqdm import tqdm
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CONFIGURACIÓN
+# CONFIGURACIÓN — aquí se definen los parámetros principales del script
 # ─────────────────────────────────────────────────────────────────────────────
 
 TICKERS      = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"]
 FECHA_INICIO = "2019-01-01"
-FECHA_FIN    = "2024-12-31"
-FACTOR_ANUAL = np.sqrt(252)  # factor de anualización para volatilidad diaria
+FECHA_FIN    = "2026-04-05"
+FACTOR_ANUAL = np.sqrt(252)  # para pasar de volatilidad diaria a anualizada (252 días hábiles al año)
 
 RAIZ_PROYECTO = Path(__file__).resolve().parent.parent
 DIR_SALIDA    = RAIZ_PROYECTO / "data" / "raw" / "market"
@@ -65,33 +78,36 @@ log = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FUNCIONES
+# FUNCIONES — cada una se encarga de un paso concreto del proceso
 # ─────────────────────────────────────────────────────────────────────────────
 
 def descargar_ohlcv(ticker: str) -> pd.DataFrame:
     """
-    Descarga precios OHLCV diarios de Yahoo Finance para un ticker dado.
+    Se conecta a Yahoo Finance y descarga los precios diarios (apertura, máximo,
+    mínimo, cierre y volumen) para una empresa concreta. Es la función base que
+    alimenta todo el resto del script.
 
     Parámetros
     ----------
-    ticker : str  — símbolo bursátil (p. ej. 'AAPL').
+    ticker : str  — el símbolo bursátil de la empresa, por ejemplo 'AAPL' para Apple.
 
     Devuelve
     --------
-    pd.DataFrame con columnas: open, high, low, close, volume.
+    Un DataFrame de pandas con las columnas open, high, low, close y volume,
+    indexado por fecha y ordenado cronológicamente.
     """
     datos = yf.download(
         ticker,
         start=FECHA_INICIO,
         end=FECHA_FIN,
-        auto_adjust=True,  # ajusta splits y dividendos automáticamente
+        auto_adjust=True,  # esto hace que yfinance ajuste automáticamente los splits y dividendos
         progress=False,
     )
 
     if datos.empty:
         raise ValueError(f"No se obtuvieron datos para {ticker}")
 
-    # Aplanar MultiIndex si yfinance lo devuelve así
+    # A veces yfinance devuelve columnas con MultiIndex, así que lo aplanamos por si acaso
     if isinstance(datos.columns, pd.MultiIndex):
         datos.columns = datos.columns.get_level_values(0)
 
@@ -102,50 +118,55 @@ def descargar_ohlcv(ticker: str) -> pd.DataFrame:
 
 def calcular_variables(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
     """
-    Calcula las variables de mercado derivadas necesarias para el TFG.
+    A partir de los precios en crudo, calcula todas las variables derivadas que
+    necesitamos para los modelos del TFG. Esto incluye rendimientos, volatilidades
+    rolling, proxies de volatilidad intradía y cambios en volumen. Básicamente
+    transforma el DataFrame de precios simples en algo listo para modelar.
 
     Parámetros
     ----------
-    df     : DataFrame con columnas OHLCV (índice = fecha).
-    ticker : símbolo bursátil; se añade como columna identificadora.
+    df     : DataFrame con las columnas OHLCV originales (el índice tiene que ser la fecha).
+    ticker : el símbolo bursátil de la empresa, que se mete como columna para poder
+             identificar cada fila cuando luego juntemos todo en un solo CSV.
 
     Devuelve
     --------
-    pd.DataFrame enriquecido con todas las variables calculadas.
+    El mismo DataFrame pero enriquecido con todas las variables calculadas.
     """
     df = df.copy()
 
-    # Rendimiento logarítmico diario
+    # Rendimiento logarítmico diario: log(cierre_hoy / cierre_ayer)
     df["log_return"] = np.log(df["close"] / df["close"].shift(1))
 
-    # Volatilidad realizada rolling (anualizada)
+    # Volatilidad realizada con ventana rolling, anualizada multiplicando por sqrt(252)
     df["vol_realized_5d"]  = df["log_return"].rolling(5).std()  * FACTOR_ANUAL
     df["vol_realized_20d"] = df["log_return"].rolling(20).std() * FACTOR_ANUAL
 
-    # Proxy de volatilidad intradía (rango de Parkinson simplificado)
+    # Proxy de volatilidad intradía usando el rango del día (versión simplificada del rango de Parkinson)
     df["vol_intraday"] = (df["high"] - df["low"]) / df["close"]
 
-    # Rendimiento absoluto y al cuadrado
+    # Estas dos son proxies clásicos de volatilidad: el absoluto y el cuadrado del rendimiento
     df["abs_return"] = df["log_return"].abs()
     df["sq_return"]  = df["log_return"] ** 2
 
-    # Cambio logarítmico en volumen
+    # Cambio logarítmico en volumen: si el volumen sube mucho puede indicar que algo gordo está pasando
     df["log_volume_change"] = np.log(df["volume"] / df["volume"].shift(1))
 
-    # Identificador de empresa (primera columna)
+    # Metemos el ticker como primera columna para saber de qué empresa es cada fila
     df.insert(0, "ticker", ticker)
 
     return df
 
 
 def guardar_csv(df: pd.DataFrame, ruta: Path) -> None:
-    """Guarda un DataFrame como CSV con índice de fecha."""
+    """Guarda un DataFrame en formato CSV, manteniendo la fecha como índice."""
     df.to_csv(ruta, index=True, date_format="%Y-%m-%d")
     log.info(f"Guardado → {ruta.relative_to(RAIZ_PROYECTO)}")
 
 
 def imprimir_resumen(df_all: pd.DataFrame) -> None:
-    """Imprime resumen estadístico de los datos descargados por empresa."""
+    """Imprime un resumen completo de lo que se ha descargado: cobertura temporal,
+    estadísticas de rendimientos, volatilidad media y valores nulos por empresa."""
     sep = "─" * 74
 
     print(f"\n{sep}")
@@ -154,14 +175,14 @@ def imprimir_resumen(df_all: pd.DataFrame) -> None:
 
     grupos = df_all.groupby("ticker")
 
-    # Cobertura temporal
+    # Primero mostramos cuántas filas tiene cada empresa y de qué fecha a qué fecha
     print("\n  COBERTURA TEMPORAL\n")
     print(f"  {'Ticker':<8} {'Filas':>6}  {'Inicio':>12}  {'Fin':>12}")
     print(f"  {'------':<8} {'------':>6}  {'----------':>12}  {'----------':>12}")
     for ticker, g in grupos:
         print(f"  {ticker:<8} {len(g):>6}  {str(g.index.min().date()):>12}  {str(g.index.max().date()):>12}")
 
-    # Rendimientos
+    # Estadísticas básicas de los rendimientos logarítmicos
     print("\n  RENDIMIENTOS LOGARÍTMICOS DIARIOS\n")
     print(f"  {'Ticker':<8} {'Media':>10}  {'Std':>10}  {'Min':>10}  {'Max':>10}")
     print(f"  {'------':<8} {'----------':>10}  {'----------':>10}  {'----------':>10}  {'----------':>10}")
@@ -169,7 +190,7 @@ def imprimir_resumen(df_all: pd.DataFrame) -> None:
         r = g["log_return"].dropna()
         print(f"  {ticker:<8} {r.mean():>10.6f}  {r.std():>10.6f}  {r.min():>10.6f}  {r.max():>10.6f}")
 
-    # Volatilidad realizada 20d
+    # Volatilidad realizada con ventana de 20 días (nuestra variable objetivo)
     print("\n  VOLATILIDAD REALIZADA MEDIA (ventana 20d, anualizada)\n")
     print(f"  {'Ticker':<8} {'Media':>10}  {'Std':>10}  {'Max':>10}")
     print(f"  {'------':<8} {'----------':>10}  {'----------':>10}  {'----------':>10}")
@@ -177,7 +198,7 @@ def imprimir_resumen(df_all: pd.DataFrame) -> None:
         v = g["vol_realized_20d"].dropna()
         print(f"  {ticker:<8} {v.mean():>10.4f}  {v.std():>10.4f}  {v.max():>10.4f}")
 
-    # Nulos
+    # Revisamos si hay nulos (los primeros registros rolling siempre son NaN, eso es normal)
     print("\n  VALORES NULOS POR COLUMNA\n")
     nulos = df_all.isnull().sum()
     nulos = nulos[nulos > 0]
@@ -194,7 +215,7 @@ def imprimir_resumen(df_all: pd.DataFrame) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MAIN
+# MAIN — aquí se orquesta todo: descarga, cálculo de variables y guardado
 # ─────────────────────────────────────────────────────────────────────────────
 
 def main():
@@ -207,15 +228,15 @@ def main():
         try:
             df_raw = descargar_ohlcv(ticker)
             df     = calcular_variables(df_raw, ticker)
-            guardar_csv(df, DIR_SALIDA / f"{ticker}_market_2019_2024.csv")
+            guardar_csv(df, DIR_SALIDA / f"{ticker}_market_2019_2026.csv")
             frames.append(df)
         except Exception as e:
             log.error(f"Error con {ticker}: {e}")
             sys.exit(1)
 
-    # CSV combinado
+    # Juntamos todos los DataFrames en un solo CSV combinado con las 7 empresas
     df_all = pd.concat(frames).sort_values(["ticker", "date"])
-    guardar_csv(df_all, DIR_SALIDA / "ALL_market_2019_2024.csv")
+    guardar_csv(df_all, DIR_SALIDA / "ALL_market_2019_2026.csv")
     log.info(f"CSV combinado: {len(df_all):,} filas en total")
 
     imprimir_resumen(df_all)
