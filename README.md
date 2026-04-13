@@ -2,7 +2,7 @@
 
 **Trabajo Fin de Grado** — Universidad Francisco de Vitoria  
 **Autor:** Daniel Palacios García  
-**Grado:** Ingeniería del Dato y Análisis del Dato  
+**Grado:** Business Analytics 
 **Curso:** 2025-2026
 
 ---
